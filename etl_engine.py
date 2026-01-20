@@ -1,32 +1,37 @@
-"""
-etl_engine.py
-
-Integration and aggregation utilities.
-Functions return DataFrames suitable for the dashboard.
-"""
 import pandas as pd
 
 def perform_integration(df_imdb, df_netflix):
     """
-    Merge IMDb and synthetic streaming data on 'Join_Key' and compute derived metrics.
-    Returns empty DataFrame if inputs are empty.
+    Performs the Hash Inner Join between Theatrical (A) and Streaming (B).
     """
-    if df_imdb.empty or df_netflix.empty:
-        return pd.DataFrame()
-
-    df_integrated = pd.merge(df_imdb, df_netflix, on='Join_Key', how='inner')
-
-    df_integrated['Revenue_Per_View_Hour'] = df_integrated.apply(
-        lambda x: x['Gross'] / x['Total_Hours_Viewed'] if x['Total_Hours_Viewed'] > 0 else 0, axis=1
+    # 1. Standardize Join Keys (Normalization)
+    df_imdb["join_key"] = df_imdb["Movie Name"].astype(str).str.lower().str.strip()
+    
+    # 2. Perform Hash Inner Join
+    merged_df = pd.merge(
+        df_imdb, 
+        df_netflix, 
+        left_on="join_key", 
+        right_on="Movie_Name", 
+        how="inner"
+    )
+    
+    # 3. Clean up the resulting schema
+    merged_df = merged_df.drop(columns=["join_key", "Movie_Name"])
+    
+    # 4. Remove Duplicates (in case multiple matches found)
+    merged_df = merged_df.drop_duplicates(subset=["ID"])
+    
+    # Derived metric: Revenue per streaming hour (safe division)
+    merged_df["Revenue_Per_View_Hour"] = merged_df.apply(
+        lambda x: (x.get("Gross", 0) / x.get("Total_Hours_Viewed", 1)) if x.get("Total_Hours_Viewed", 0) > 0 else 0,
+        axis=1
     )
 
-    return df_integrated
+    return merged_df
 
-def get_genre_aggregation(df_integrated):
+def get_genre_aggregation(df):
     """
-    Aggregate Gross and Total_Hours_Viewed by Primary_Genre for visualization.
+    OLAP Roll-Up Operation: Group by Genre
     """
-    if 'Primary_Genre' not in df_integrated.columns:
-        return pd.DataFrame()
-
-    return df_integrated.groupby('Primary_Genre')[['Gross', 'Total_Hours_Viewed']].sum().reset_index()
+    return df.groupby("Primary_Genre")[["Gross", "Total_Hours_Viewed", "Votes"]].mean().reset_index()

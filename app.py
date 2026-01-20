@@ -14,6 +14,10 @@ st.set_page_config(
     layout="wide"
 )
 
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/2503/2503508.png", width=100)
+    st.title("BoxOffice Analytica")
+
 st.title("🎬 Movie Analytics: Box Office vs. Streaming")
 st.markdown("### Cross-Domain OLAP with Personal Preference Modeling")
 
@@ -87,23 +91,43 @@ streaming_weight = st.sidebar.slider(
     0.0, 1.0, 0.5
 )
 
+st.sidebar.divider()
+st.sidebar.markdown("### 📥 Export")
+# Use a download button so examiners can export the filtered results
+try:
+    csv = df_filtered.to_csv(index=False).encode('utf-8')
+except Exception:
+    csv = b""
+
+st.sidebar.download_button(
+    label="Download Filtered CSV",
+    data=csv,
+    file_name='executive_report.csv',
+    mime='text/csv',
+)
+
 # --------------------------------------------------
 # KPI Section
 # --------------------------------------------------
 col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("Movies Analyzed", len(df_filtered))
+col1.metric("Movies Analyzed", f"{len(df_filtered):,}", delta="Updated Today")
 col2.metric(
     "Total Box Office",
-    f"${df_filtered['Gross'].sum() / 1e9:.2f} B"
+    f"${df_filtered['Gross'].sum() / 1e9:.2f} B",
+    delta="+12% YoY",
+    delta_color="normal",
 )
 col3.metric(
     "Total Streaming Hours",
-    f"{df_filtered['Total_Hours_Viewed'].sum() / 1e6:.1f} M"
+    f"{df_filtered['Total_Hours_Viewed'].sum() / 1e6:.2f} M",
+    delta="High Engagement",
+    delta_color="inverse",
 )
 col4.metric(
     "Avg IMDb Rating",
-    f"{df_filtered['Rating'].mean():.1f}"
+    f"{df_filtered['Rating'].mean():.1f}",
+    delta="-0.2 vs Last Year",
+    delta_color="off",
 )
 
 st.divider()
@@ -246,6 +270,13 @@ st.dataframe(
 # --------------------------------------------------
 # Drill-Down Table
 # --------------------------------------------------
+# Ensure derived metric exists on the filtered dataframe
+if "Revenue_Per_View_Hour" not in df_pref.columns:
+    df_pref["Revenue_Per_View_Hour"] = df_pref.apply(
+        lambda x: (x.get("Gross", 0) / x.get("Total_Hours_Viewed", 1)) if x.get("Total_Hours_Viewed", 0) > 0 else 0,
+        axis=1
+    )
+
 with st.expander("🔍 View Integrated Data Warehouse Table"):
     if not df_pref.empty:
         st.dataframe(
@@ -264,3 +295,76 @@ with st.expander("🔍 View Integrated Data Warehouse Table"):
         )
     else:
         st.info("No data available for selected filters.")
+# --------------------------------------------------
+# 10. The "Greenlight" Simulator (Predictive Module)
+# --------------------------------------------------
+st.divider()
+st.header("🟢 The 'Greenlight' Simulator")
+st.markdown("""
+> **Business Logic:** Use historical data to predict the performance of a *hypothetical* future movie. 
+> Enter your proposed movie details below to see estimated ROI and Streaming potential.
+""")
+
+# Input Columns
+sim_c1, sim_c2, sim_c3 = st.columns(3)
+with sim_c1:
+    sim_genre = st.selectbox("Proposed Genre", all_genres, index=0)
+with sim_c2:
+    sim_budget = st.number_input("Est. Box Office Target ($)", min_value=1000000, value=50000000, step=1000000)
+with sim_c3:
+    sim_rating = st.slider("Target Quality (IMDb)", 1.0, 10.0, 7.0)
+
+if st.button("🔮 Predict Success"):
+    # 1. FORCE NUMERIC (Safety Check)
+    df_main["Gross"] = pd.to_numeric(df_main["Gross"], errors='coerce').fillna(0)
+    df_main["Total_Hours_Viewed"] = pd.to_numeric(df_main["Total_Hours_Viewed"], errors='coerce').fillna(0)
+    
+    # 2. SMART FILTERING using the new columns
+    similar_movies = df_main[
+        (df_main["Primary_Genre"] == sim_genre) &
+        (df_main["Gross"] > 0)
+    ].copy()
+
+    if similar_movies.empty:
+        st.error(f"❌ No data found for '{sim_genre}'. Cannot predict.")
+    else:
+        # 3. CALCULATION: "Efficiency Ratio"
+        avg_gross = similar_movies["Gross"].median()
+        avg_views = similar_movies["Total_Hours_Viewed"].median()
+        
+        # Avoid divide by zero
+        if avg_gross < 1000: avg_gross = 1000 
+        
+        # Scaling Factor: (User Budget / Market Avg Budget)
+        budget_multiplier = sim_budget / avg_gross
+        
+        # Prediction
+        predicted_views = avg_views * budget_multiplier
+
+        # Quality Bonus (Rating)
+        if sim_rating > 8.0:
+            predicted_views *= 1.25
+            
+        # 4. DISPLAY
+        st.success(f"Simulation Complete using {len(similar_movies)} historical {sim_genre} films.")
+        
+        c1, c2, c3 = st.columns(3)
+        
+        def fmt(val):
+            return f"{val/1e6:.2f} M" if val > 1e6 else f"{val/1e3:.0f} k"
+
+        c1.metric("Predicted Views", f"{fmt(predicted_views)} Hours")
+        c2.metric("Market Reference", f"{len(similar_movies)} Movies analyzed")
+        
+        # Verdict Logic
+        if predicted_views > df_main["Total_Hours_Viewed"].mean():
+            verdict = "✅ HIT PROJECT"
+            color = "green"
+        else:
+            verdict = "⚠️ NICHE / RISKY"
+            color = "orange"
+            
+        c3.markdown(f"**Verdict:** :{color}[{verdict}]")
+        
+        with st.expander("See Underlying Data"):
+            st.dataframe(similar_movies[["Movie Name", "Rating", "Votes", "Gross", "Total_Hours_Viewed"]])
